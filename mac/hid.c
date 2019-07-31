@@ -390,6 +390,64 @@ static void process_pending_events(void) {
 	} while(res != kCFRunLoopRunFinished && res != kCFRunLoopRunTimedOut);
 }
 
+static struct hid_device_info *create_device_info(IOHIDDeviceRef dev) 
+{
+	unsigned short dev_vid;
+	unsigned short dev_pid;
+	#define BUF_LEN 256
+	wchar_t buf[BUF_LEN];
+
+	struct hid_device_info *cur_dev;
+	io_object_t iokit_dev;
+	kern_return_t res;
+	io_string_t path;
+
+	if (dev == NULL) {
+		return NULL;
+	}
+
+	cur_dev = (struct hid_device_info *)calloc(1, sizeof(struct hid_device_info));
+
+	dev_vid = get_vendor_id(dev);
+	dev_pid = get_product_id(dev);
+
+	/* Get the Usage Page and Usage for this device. */
+	cur_dev->usage_page = get_int_property(dev, CFSTR(kIOHIDPrimaryUsagePageKey));
+	cur_dev->usage = get_int_property(dev, CFSTR(kIOHIDPrimaryUsageKey));
+
+	/* Fill out the record */
+	cur_dev->next = NULL;
+
+	/* Fill in the path (IOService plane) */
+	iokit_dev = hidapi_IOHIDDeviceGetService(dev);
+	res = IORegistryEntryGetPath(iokit_dev, kIOServicePlane, path);
+	if (res == KERN_SUCCESS)
+		cur_dev->path = strdup(path);
+	else
+		cur_dev->path = strdup("");
+
+	/* Serial Number */
+	get_serial_number(dev, buf, BUF_LEN);
+	cur_dev->serial_number = dup_wcs(buf);
+
+	/* Manufacturer and Product strings */
+	get_manufacturer_string(dev, buf, BUF_LEN);
+	cur_dev->manufacturer_string = dup_wcs(buf);
+	get_product_string(dev, buf, BUF_LEN);
+	cur_dev->product_string = dup_wcs(buf);
+
+	/* VID/PID */
+	cur_dev->vendor_id = dev_vid;
+	cur_dev->product_id = dev_pid;
+
+	/* Release Number */
+	cur_dev->release_number = get_int_property(dev, CFSTR(kIOHIDVersionNumberKey));
+
+	/* Interface Number (Unsupported on Mac)*/
+	cur_dev->interface_number = -1;
+
+	return cur_dev;
+} 
 struct hid_device_info  HID_API_EXPORT *hid_enumerate(unsigned short vendor_id, unsigned short product_id)
 {
 	struct hid_device_info *root = NULL; /* return object */
@@ -405,7 +463,7 @@ struct hid_device_info  HID_API_EXPORT *hid_enumerate(unsigned short vendor_id, 
 	process_pending_events();
 
 	/* Get a list of the Devices */
-	CFDictionaryRef matching = NULL;
+	CFMutableDictionaryRef matching = NULL;
 	if (vendor_id != 0 || product_id != 0) {
 		matching = CFDictionaryCreateMutable(kCFAllocatorDefault, kIOHIDOptionsTypeNone, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
 
@@ -437,70 +495,25 @@ struct hid_device_info  HID_API_EXPORT *hid_enumerate(unsigned short vendor_id, 
 
 	/* Iterate over each device, making an entry for it. */
 	for (i = 0; i < num_devices; i++) {
-		unsigned short dev_vid;
-		unsigned short dev_pid;
-		#define BUF_LEN 256
-		wchar_t buf[BUF_LEN];
 
 		IOHIDDeviceRef dev = device_array[i];
 
-        if (!dev) {
-            continue;
-        }
-		dev_vid = get_vendor_id(dev);
-		dev_pid = get_product_id(dev);
+		if (!dev) {
+				continue;
+		}
 
-		/* Matching vid and pid is already done. */
-			struct hid_device_info *tmp;
-			io_object_t iokit_dev;
-			kern_return_t res;
-			io_string_t path;
+		struct hid_device_info *tmp = create_device_info(dev);
+		if (tmp == NULL) {
+			continue;
+		}
 
-			/* VID/PID match. Create the record. */
-			tmp = malloc(sizeof(struct hid_device_info));
-			if (cur_dev) {
-				cur_dev->next = tmp;
-			}
-			else {
-				root = tmp;
-			}
-			cur_dev = tmp;
-
-			/* Get the Usage Page and Usage for this device. */
-			cur_dev->usage_page = get_int_property(dev, CFSTR(kIOHIDPrimaryUsagePageKey));
-			cur_dev->usage = get_int_property(dev, CFSTR(kIOHIDPrimaryUsageKey));
-
-			/* Fill out the record */
-			cur_dev->next = NULL;
-
-			/* Fill in the path (IOService plane) */
-			iokit_dev = hidapi_IOHIDDeviceGetService(dev);
-			res = IORegistryEntryGetPath(iokit_dev, kIOServicePlane, path);
-			if (res == KERN_SUCCESS)
-				cur_dev->path = strdup(path);
-			else
-				cur_dev->path = strdup("");
-
-			/* Serial Number */
-			get_serial_number(dev, buf, BUF_LEN);
-			cur_dev->serial_number = dup_wcs(buf);
-
-			/* Manufacturer and Product strings */
-			get_manufacturer_string(dev, buf, BUF_LEN);
-			cur_dev->manufacturer_string = dup_wcs(buf);
-			get_product_string(dev, buf, BUF_LEN);
-			cur_dev->product_string = dup_wcs(buf);
-
-			/* VID/PID */
-			cur_dev->vendor_id = dev_vid;
-			cur_dev->product_id = dev_pid;
-
-			/* Release Number */
-			cur_dev->release_number = get_int_property(dev, CFSTR(kIOHIDVersionNumberKey));
-
-			/* Interface Number (Unsupported on Mac)*/
-			cur_dev->interface_number = -1;
-		
+		if (cur_dev) {
+			cur_dev->next = tmp;
+		}
+		else {
+			root = tmp;
+		}
+		cur_dev = tmp;	
 	}
 
 	free(device_array);
