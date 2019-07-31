@@ -405,7 +405,29 @@ struct hid_device_info  HID_API_EXPORT *hid_enumerate(unsigned short vendor_id, 
 	process_pending_events();
 
 	/* Get a list of the Devices */
-	IOHIDManagerSetDeviceMatching(hid_mgr, NULL);
+	CFDictionaryRef matching = NULL;
+	if (vendor_id != 0 || product_id != 0) {
+		matching = CFDictionaryCreateMutable(kCFAllocatorDefault, kIOHIDOptionsTypeNone, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+
+		if (vendor_id != 0) {
+			CFNumberRef v = CFNumberCreate(kCFAllocatorDefault, kCFNumberShortType, &vendor_id);
+			CFDictionarySetValue(matching, CFSTR(kIOHIDVendorIDKey), v);
+			CFRelease(v);
+		}
+
+		if (product_id != 0) {
+			CFNumberRef p = CFNumberCreate(kCFAllocatorDefault, kCFNumberShortType, &product_id);
+			CFDictionarySetValue(matching, CFSTR(kIOHIDProductIDKey), p);
+			CFRelease(p);
+		}
+
+		CFShow(matching);
+	}
+	IOHIDManagerSetDeviceMatching(hid_mgr, matching);
+	if (matching != NULL) {
+		CFRelease(matching);
+	}
+
 	CFSetRef device_set = IOHIDManagerCopyDevices(hid_mgr);
 
 	/* Convert the list into a C array so we can iterate easily. */
@@ -428,9 +450,7 @@ struct hid_device_info  HID_API_EXPORT *hid_enumerate(unsigned short vendor_id, 
 		dev_vid = get_vendor_id(dev);
 		dev_pid = get_product_id(dev);
 
-		/* Check the VID/PID against the arguments */
-		if ((vendor_id == 0x0 || vendor_id == dev_vid) &&
-		    (product_id == 0x0 || product_id == dev_pid)) {
+		/* Matching vid and pid is already done. */
 			struct hid_device_info *tmp;
 			io_object_t iokit_dev;
 			kern_return_t res;
@@ -480,7 +500,7 @@ struct hid_device_info  HID_API_EXPORT *hid_enumerate(unsigned short vendor_id, 
 
 			/* Interface Number (Unsupported on Mac)*/
 			cur_dev->interface_number = -1;
-		}
+		
 	}
 
 	free(device_array);
