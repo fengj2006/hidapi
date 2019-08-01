@@ -188,6 +188,15 @@ static void register_error(hid_device *device, const char *op)
 }
 #endif
 
+static CFArrayRef get_array_property(IOHIDDeviceRef device, CFStringRef key) 
+{
+	CFTypeRef ref = IOHIDDeviceGetProperty(device, key);
+	if (ref != NULL && CFGetTypeID(ref) == CFArrayGetTypeID()) {
+		return (CFArrayRef)ref;
+	} else {
+		return NULL;
+	}
+}
 
 static int32_t get_int_property(IOHIDDeviceRef device, CFStringRef key)
 {
@@ -202,6 +211,11 @@ static int32_t get_int_property(IOHIDDeviceRef device, CFStringRef key)
 		}
 	}
 	return 0;
+}
+
+static CFArrayRef get_usage_pairs(IOHIDDeviceRef device) 
+{
+	return get_array_property(device, CFSTR(kIOHIDDeviceUsagePairsKey));
 }
 
 static unsigned short get_vendor_id(IOHIDDeviceRef device)
@@ -390,14 +404,14 @@ static void process_pending_events(void) {
 	} while(res != kCFRunLoopRunFinished && res != kCFRunLoopRunTimedOut);
 }
 
-static struct hid_device_info *create_device_info(IOHIDDeviceRef dev) 
+static HID_DEVICE_INFO *create_device_info_with_usage(IOHIDDeviceRef dev, int32_t usage_page, int32_t usage) 
 {
 	unsigned short dev_vid;
 	unsigned short dev_pid;
-	#define BUF_LEN 256
+	int BUF_LEN = 256;
 	wchar_t buf[BUF_LEN];
 
-	struct hid_device_info *cur_dev;
+	HID_DEVICE_INFO *cur_dev;
 	io_object_t iokit_dev;
 	kern_return_t res;
 	io_string_t path;
@@ -406,14 +420,13 @@ static struct hid_device_info *create_device_info(IOHIDDeviceRef dev)
 		return NULL;
 	}
 
-	cur_dev = (struct hid_device_info *)calloc(1, sizeof(struct hid_device_info));
+	cur_dev = (HID_DEVICE_INFO *)calloc(1, sizeof(HID_DEVICE_INFO));
 
 	dev_vid = get_vendor_id(dev);
 	dev_pid = get_product_id(dev);
 
-	/* Get the Usage Page and Usage for this device. */
-	cur_dev->usage_page = get_int_property(dev, CFSTR(kIOHIDPrimaryUsagePageKey));
-	cur_dev->usage = get_int_property(dev, CFSTR(kIOHIDPrimaryUsageKey));
+	cur_dev->usage_page = usage_page;
+	cur_dev->usage = usage;
 
 	/* Fill out the record */
 	cur_dev->next = NULL;
@@ -447,11 +460,60 @@ static struct hid_device_info *create_device_info(IOHIDDeviceRef dev)
 	cur_dev->interface_number = -1;
 
 	return cur_dev;
-} 
-struct hid_device_info  HID_API_EXPORT *hid_enumerate(unsigned short vendor_id, unsigned short product_id)
+}
+
+static HID_DEVICE_INFO *create_device_info(IOHIDDeviceRef device)
 {
-	struct hid_device_info *root = NULL; /* return object */
-	struct hid_device_info *cur_dev = NULL;
+	HID_DEVICE_INFO *root;
+	CFArrayRef usage_pairs = get_usage_pairs(device);
+
+
+	if (usage_pairs == NULL || CFArrayGetCount(usage_pairs) == 0) {
+		/* error when generating or parsing usage pairs */
+		int32_t usage_page = get_int_property(device, CFSTR(kIOHIDPrimaryUsagePageKey));
+		int32_t usage = get_int_property(device, CFSTR(kIOHIDPrimaryUsageKey));
+
+		root = create_device_info_with_usage(device, usage_page, usage);
+	}
+	if (usage_pairs != NULL) {
+		root = NULL;
+		HID_DEVICE_INFO *cur = NULL;
+		HID_DEVICE_INFO *next = NULL;
+		for (CFIndex i = 0; i < CFArrayGetCount(usage_pairs); i++) {
+			CFTypeRef dict_ref = CFArrayGetValueAtIndex(usage_pairs, i);
+			if (CFGetTypeID(dict_ref) != CFDictionaryGetTypeID()) {
+				continue;
+			}
+			CFDictionaryRef dict = (CFDictionaryRef)dict_ref;
+			CFTypeRef usage_page_ref, usage_ref;
+			int32_t usage_page, usage;
+			
+			if (!CFDictionaryGetValueIfPresent(dict, CFSTR(kIOHIDDeviceUsagePageKey), &usage_page_ref) ||
+			    !CFDictionaryGetValueIfPresent(dict, CFSTR(kIOHIDDeviceUsageKey), &usage_ref) ||
+					CFGetTypeID(usage_page_ref) != CFNumberGetTypeID() ||
+					CFGetTypeID(usage_ref) != CFNumberGetTypeID() ||
+					!CFNumberGetValue((CFNumberRef)usage_page_ref, kCFNumberIntType, &usage_page) ||
+					!CFNumberGetValue((CFNumberRef)usage_ref, kCFNumberIntType, &usage)) {
+					continue;
+			}
+			next = create_device_info_with_usage(device, usage_page, usage);
+			if (cur == NULL) {
+				root = next;
+				cur = next;
+			}
+			else {
+				cur->next = next;
+			}
+		}
+	}
+
+	return root;
+}
+
+HID_DEVICE_INFO  HID_API_EXPORT *hid_enumerate(unsigned short vendor_id, unsigned short product_id)
+{
+	HID_DEVICE_INFO *root = NULL; /* return object */
+	HID_DEVICE_INFO *cur_dev = NULL;
 	CFIndex num_devices;
 	int i;
 
@@ -502,7 +564,7 @@ struct hid_device_info  HID_API_EXPORT *hid_enumerate(unsigned short vendor_id, 
 				continue;
 		}
 
-		struct hid_device_info *tmp = create_device_info(dev);
+		HID_DEVICE_INFO *tmp = create_device_info(dev);
 		if (tmp == NULL) {
 			continue;
 		}
@@ -522,12 +584,12 @@ struct hid_device_info  HID_API_EXPORT *hid_enumerate(unsigned short vendor_id, 
 	return root;
 }
 
-void  HID_API_EXPORT hid_free_enumeration(struct hid_device_info *devs)
+void  HID_API_EXPORT hid_free_enumeration(HID_DEVICE_INFO *devs)
 {
 	/* This function is identical to the Linux version. Platform independent. */
-	struct hid_device_info *d = devs;
+	HID_DEVICE_INFO *d = devs;
 	while (d) {
-		struct hid_device_info *next = d->next;
+		HID_DEVICE_INFO *next = d->next;
 		free(d->path);
 		free(d->serial_number);
 		free(d->manufacturer_string);
@@ -540,7 +602,7 @@ void  HID_API_EXPORT hid_free_enumeration(struct hid_device_info *devs)
 hid_device * HID_API_EXPORT hid_open(unsigned short vendor_id, unsigned short product_id, const wchar_t *serial_number)
 {
 	/* This function is identical to the Linux version. Platform independent. */
-	struct hid_device_info *devs, *cur_dev;
+	HID_DEVICE_INFO *devs, *cur_dev;
 	const char *path_to_open = NULL;
 	hid_device * handle = NULL;
 
