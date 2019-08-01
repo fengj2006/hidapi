@@ -464,32 +464,29 @@ static HID_DEVICE_INFO *create_device_info_with_usage(IOHIDDeviceRef dev, int32_
 
 static HID_DEVICE_INFO *create_device_info(IOHIDDeviceRef device)
 {
-	HID_DEVICE_INFO *root;
+	HID_DEVICE_INFO *root = NULL;
 	CFArrayRef usage_pairs = get_usage_pairs(device);
 
+#ifdef DEBUG
+      // CFShow(usage_pairs);
+#endif
 
-	if (usage_pairs == NULL || CFArrayGetCount(usage_pairs) == 0) {
-		/* error when generating or parsing usage pairs */
-		int32_t usage_page = get_int_property(device, CFSTR(kIOHIDPrimaryUsagePageKey));
-		int32_t usage = get_int_property(device, CFSTR(kIOHIDPrimaryUsageKey));
-
-		root = create_device_info_with_usage(device, usage_page, usage);
-	}
 	if (usage_pairs != NULL) {
-		root = NULL;
 		HID_DEVICE_INFO *cur = NULL;
 		HID_DEVICE_INFO *next = NULL;
 		for (CFIndex i = 0; i < CFArrayGetCount(usage_pairs); i++) {
-			CFTypeRef dict_ref = CFArrayGetValueAtIndex(usage_pairs, i);
-			if (CFGetTypeID(dict_ref) != CFDictionaryGetTypeID()) {
+			CFTypeRef dict = CFArrayGetValueAtIndex(usage_pairs, i);
+			if (CFGetTypeID(dict) != CFDictionaryGetTypeID()) {
 				continue;
 			}
-			CFDictionaryRef dict = (CFDictionaryRef)dict_ref;
+#ifdef DEBUG
+      // CFShow(dict);
+#endif
 			CFTypeRef usage_page_ref, usage_ref;
 			int32_t usage_page, usage;
 			
-			if (!CFDictionaryGetValueIfPresent(dict, CFSTR(kIOHIDDeviceUsagePageKey), &usage_page_ref) ||
-			    !CFDictionaryGetValueIfPresent(dict, CFSTR(kIOHIDDeviceUsageKey), &usage_ref) ||
+			if (!CFDictionaryGetValueIfPresent((CFDictionaryRef)dict, CFSTR(kIOHIDDeviceUsagePageKey), &usage_page_ref) ||
+			    !CFDictionaryGetValueIfPresent((CFDictionaryRef)dict, CFSTR(kIOHIDDeviceUsageKey), &usage_ref) ||
 					CFGetTypeID(usage_page_ref) != CFNumberGetTypeID() ||
 					CFGetTypeID(usage_ref) != CFNumberGetTypeID() ||
 					!CFNumberGetValue((CFNumberRef)usage_page_ref, kCFNumberIntType, &usage_page) ||
@@ -499,12 +496,20 @@ static HID_DEVICE_INFO *create_device_info(IOHIDDeviceRef device)
 			next = create_device_info_with_usage(device, usage_page, usage);
 			if (cur == NULL) {
 				root = next;
-				cur = next;
 			}
 			else {
 				cur->next = next;
 			}
+			cur = next;
 		}
+	}
+
+	if (root == NULL) {
+		/* error when generating or parsing usage pairs */
+		int32_t usage_page = get_int_property(device, CFSTR(kIOHIDPrimaryUsagePageKey));
+		int32_t usage = get_int_property(device, CFSTR(kIOHIDPrimaryUsageKey));
+
+		root = create_device_info_with_usage(device, usage_page, usage);
 	}
 
 	return root;
@@ -540,8 +545,9 @@ HID_DEVICE_INFO  HID_API_EXPORT *hid_enumerate(unsigned short vendor_id, unsigne
 			CFDictionarySetValue(matching, CFSTR(kIOHIDProductIDKey), p);
 			CFRelease(p);
 		}
-
-		CFShow(matching);
+#ifdef DEBUG
+		// CFShow(matching);
+#endif
 	}
 	IOHIDManagerSetDeviceMatching(hid_mgr, matching);
 	if (matching != NULL) {
@@ -559,6 +565,9 @@ HID_DEVICE_INFO  HID_API_EXPORT *hid_enumerate(unsigned short vendor_id, unsigne
 	for (i = 0; i < num_devices; i++) {
 
 		IOHIDDeviceRef dev = device_array[i];
+#ifdef DEBUG
+    // CFShow(dev);
+#endif
 
 		if (!dev) {
 				continue;
@@ -575,7 +584,12 @@ HID_DEVICE_INFO  HID_API_EXPORT *hid_enumerate(unsigned short vendor_id, unsigne
 		else {
 			root = tmp;
 		}
-		cur_dev = tmp;	
+		cur_dev = tmp;
+
+		/* move the pointer to the tail of returnd list */
+		while (cur_dev->next != NULL) {
+		  cur_dev = cur_dev->next;	
+		}
 	}
 
 	free(device_array);
